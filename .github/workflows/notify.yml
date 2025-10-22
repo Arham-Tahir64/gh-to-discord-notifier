@@ -1,0 +1,79 @@
+name: Notify Discord on new commits
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  REPO_OWNER: negarprh
+  REPO_NAME: Canadian-Tech-Internships-2026
+  BRANCH: main                 # change if the default branch is different
+  DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout self
+        uses: actions/checkout@v4
+
+      - name: Read last seen SHA (if any)
+        id: last
+        run: |
+          if [ -f last_sha.txt ]; then
+            echo "last=$(cat last_sha.txt)" >> $GITHUB_OUTPUT
+          else
+            echo "last=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get latest commit via GitHub API
+        id: latest
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/commits?sha=${BRANCH}\&per_page=1 \
+            | jq -r '.[0].sha')
+          MSG=$(curl -s https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/commits/${LATEST})
+          URL=$(echo "$MSG" | jq -r '.html_url')
+          TITLE=$(echo "$MSG" | jq -r '.commit.message' | head -c 180)
+          AUTHOR=$(echo "$MSG" | jq -r '.commit.author.name')
+          DATE=$(echo "$MSG" | jq -r '.commit.author.date')
+          echo "sha=$LATEST"   >> $GITHUB_OUTPUT
+          echo "url=$URL"      >> $GITHUB_OUTPUT
+          echo "title=$TITLE"  >> $GITHUB_OUTPUT
+          echo "author=$AUTHOR">> $GITHUB_OUTPUT
+          echo "date=$DATE"    >> $GITHUB_OUTPUT
+
+      - name: If new, post to Discord
+        if: steps.last.outputs.last != steps.latest.outputs.sha
+        run: |
+          payload=$(jq -n \
+            --arg content "**New update in ${REPO_OWNER}/${REPO_NAME}**" \
+            --arg url "${{ steps.latest.outputs.url }}" \
+            --arg title "${{ steps.latest.outputs.title }}" \
+            --arg author "${{ steps.latest.outputs.author }}" \
+            --arg date "${{ steps.latest.outputs.date }}" \
+            '{
+              "embeds": [{
+                "title": $title,
+                "url": $url,
+                "description": "Author: " + $author + "\nDate: " + $date,
+                "footer": {"text": "Branch: '"$BRANCH"'"}
+              }],
+              "content": $content
+            }')
+          curl -s -H "Content-Type: application/json" \
+               -d "$payload" \
+               "${DISCORD_WEBHOOK}"
+
+      - name: Persist last seen SHA
+        if: steps.last.outputs.last != steps.latest.outputs.sha
+        run: |
+          echo "${{ steps.latest.outputs.sha }}" > last_sha.txt
+          git config user.name "gh-actions"
+          git config user.email "actions@github.com"
+          git add last_sha.txt
+          git commit -m "chore: update last seen sha"
+          git push
