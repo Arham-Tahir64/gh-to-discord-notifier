@@ -30,7 +30,7 @@ jobs:
             echo "last=" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Get latest commit via GitHub API (github-script)
+      - name: Get latest commit via GitHub API
         id: latest
         uses: actions/github-script@v7
         with:
@@ -49,16 +49,39 @@ jobs:
             core.setOutput('author', c.commit.author?.name || c.author?.login || 'unknown');
             core.setOutput('date',   c.commit.author?.date || '');
 
-      - name: Debug values
-        run: |
-          echo "last:  '${{ steps.last.outputs.last }}'"
-          echo "new:   '${{ steps.latest.outputs.sha }}'"
-          echo "title: '${{ steps.latest.outputs.title }}'"
+      - name: Detect if README changed (skip if first run)
+        id: change
+        uses: actions/github-script@v7
+        env:
+          LAST: ${{ steps.last.outputs.last }}
+          NEW:  ${{ steps.latest.outputs.sha }}
+        with:
+          script: |
+            const owner = process.env.REPO_OWNER;
+            const repo  = process.env.REPO_NAME;
+            const base  = process.env.LAST;
+            const head  = process.env.NEW;
 
-      - name: If new, post to Discord
-        if: steps.last.outputs.last != steps.latest.outputs.sha
+            // First run (no base) -> treat as "changed" so you get one message
+            if (!base) { core.setOutput('readme_changed', 'true'); return; }
+
+            const { data } = await github.request('GET /repos/{owner}/{repo}/compare/{base}...{head}', {
+              owner, repo, base, head
+            });
+
+            const changed = (data.files || []).some(f => f.filename.toLowerCase() === 'readme.md');
+            core.setOutput('readme_changed', changed ? 'true' : 'false');
+
+      - name: Debug
         run: |
-          payload=$(cat <<'JSON'
+          echo "last:  ${{ steps.last.outputs.last }}"
+          echo "new:   ${{ steps.latest.outputs.sha }}"
+          echo "readme_changed: ${{ steps.change.outputs.readme_changed }}"
+
+      - name: Post to Discord
+        if: steps.last.outputs.last != steps.latest.outputs.sha && steps.change.outputs.readme_changed == 'true'
+        run: |
+          payload=$(cat <<JSON
           {
             "content": "**New update in ${REPO_OWNER}/${REPO_NAME}**",
             "embeds": [{
